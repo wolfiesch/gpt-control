@@ -35,7 +35,8 @@ function ok(result: unknown): ExecResult {
 	return { stdout: JSON.stringify({ success: true, result }), stderr: "", code: 0, killed: false };
 }
 
-function browserExec(options: { foreign?: boolean } = {}) {
+function browserExec(options: { foreign?: boolean; noAssistantTurn?: boolean; unresolvedUrlReads?: number } = {}) {
+	let unresolvedUrlReads = options.unresolvedUrlReads ?? 0;
 	let submitted = 0;
 	const prompts: string[] = [];
 	const calls: string[][] = [];
@@ -46,7 +47,13 @@ function browserExec(options: { foreign?: boolean } = {}) {
 		if (args[0] === "taskSession" && args[1] === "navigate") return ok({ tabId: 77 });
 		if (args[0] === "taskSession" && args[1] === "show") return ok({ sessionId: "bridge-session", name: options.foreign ? "other-tool" : "gpt-control:chat:conv", tabIds: [77], state: "working" });
 		if (args[0] === "taskSession" && (args[1] === "state" || args[1] === "close")) return ok({ success: true });
-		if (args[0] === "getTabs") return ok({ tabs: [{ id: 77, url: "https://chatgpt.com/c/test" }] });
+		if (args[0] === "getTabs") {
+			if (unresolvedUrlReads > 0) {
+				unresolvedUrlReads -= 1;
+				return ok({ tabs: [{ id: 77 }] });
+			}
+			return ok({ tabs: [{ id: 77, url: "https://chatgpt.com/c/test" }] });
+		}
 		if (args[0] === "fill") {
 			submitted += 1;
 			prompts.push(args[3]);
@@ -54,7 +61,7 @@ function browserExec(options: { foreign?: boolean } = {}) {
 		}
 		if (args[0] === "click" || args[0] === "uploadFile") return ok({ success: true });
 		if (args[0] === "getHTML") {
-			const turns = Array.from({ length: submitted }, (_, index) => `<div data-message-author-role="assistant"><p>answer ${index + 1}</p></div>`).join("");
+			const turns = options.noAssistantTurn ? "" : Array.from({ length: submitted }, (_, index) => `<div data-message-author-role="assistant"><p>answer ${index + 1}</p></div>`).join("");
 			writeFileSync(args[2], turns);
 			return ok({ success: true });
 		}
@@ -84,6 +91,24 @@ describe("extension surface", () => {
 		expect(text).toContain('"preferred": "browser"');
 		expect(text).toContain('"focusSafety":');
 	});
+
+	test("keeps queued image runs out of the error channel", async () => {
+		const tools = new Map<string, ToolDefinition>();
+		const fake = browserExec();
+		const pi: ExtensionAPI = { exec: fake.exec, registerTool: (definition) => tools.set(definition.name, definition) };
+		gptControl(pi);
+		const result = await tools.get("gpt_image")!.execute("image", {
+			prompt: "draw a test image",
+			wait: false,
+			timeout_ms: 200,
+			workspace_root: scratch(),
+		});
+		expect(result.isError).toBeUndefined();
+		expect(String(result.content[0]?.text)).toContain("queued");
+		const details = result.details;
+		if (!details || typeof details !== "object" || !("runId" in details) || typeof details.runId !== "string") throw new Error("Queued result omitted runId.");
+		await tools.get("gpt_run")!.execute("wait", { action: "wait", run_id: details.runId, timeout_ms: 200 });
+	});
 });
 
 describe("conversation and run semantics", () => {
@@ -99,6 +124,22 @@ describe("conversation and run semantics", () => {
 		expect(second.run.providerRunId).toBe("assistant_turn_2");
 		expect(second.run.resultText).toBe("answer 2");
 		expect(fake.calls.filter((args) => args[0] === "taskSession" && args[1] === "navigate")).toHaveLength(1);
+	});
+
+	test("waits for a newly navigated tab to expose its URL", async () => {
+		const fake = browserExec({ unresolvedUrlReads: 2 });
+		const service = new GptControlService(fake.exec, new RunStore(scratch()));
+		const result = await service.start({ kind: "chat", prompt: "first", transport: "browser", workspaceRoot: scratch(), timeoutMs: 200 });
+		expect(result.run.status).toBe("completed");
+		expect(fake.calls.filter((args) => args[0] === "getTabs")).toHaveLength(3);
+	});
+
+	test("classifies a browser response timeout as needing the user", async () => {
+		const fake = browserExec({ noAssistantTurn: true });
+		const service = new GptControlService(fake.exec, new RunStore(scratch()));
+		const result = await service.start({ kind: "image", prompt: "draw", transport: "browser", workspaceRoot: scratch(), timeoutMs: 10 });
+		expect(result.run.status).toBe("needs_user");
+		expect(result.run.error).toContain("No new assistant turn");
 	});
 
 	test("persists a structured report, manifest, and receipt for the exact run", async () => {

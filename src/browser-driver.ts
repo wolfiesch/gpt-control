@@ -17,6 +17,30 @@ import {
 import { probeBridge, resolveBridgeLauncher, splitCommandLine, type Launcher } from "./transport";
 import type { Exec } from "./types";
 
+const TAB_URL_TIMEOUT_MS = 10_000;
+
+async function waitForTabUrl(
+	exec: Exec,
+	launcher: Launcher,
+	pageId: number,
+	signal?: AbortSignal,
+): Promise<string> {
+	const deadline = Date.now() + TAB_URL_TIMEOUT_MS;
+	let delayMs = 100;
+	while (true) {
+		signal?.throwIfAborted();
+		const url = await tabUrl(exec, launcher, pageId, signal);
+		if (url) return url;
+		if (Date.now() >= deadline) {
+			throw new Error(`Browser page ${String(pageId)} URL remained unresolved after navigation.`);
+		}
+		const { promise, resolve } = Promise.withResolvers<void>();
+		setTimeout(resolve, Math.min(delayMs, deadline - Date.now()));
+		await promise;
+		delayMs = Math.min(delayMs * 2, 1_000);
+	}
+}
+
 export const BROWSER_DRIVER_PROTOCOL_VERSION = 1;
 export type DriverPageId = string | number;
 export type DriverSessionState = "working" | "needs_user" | "completed";
@@ -154,8 +178,8 @@ export class ChromeBridgeBrowserDriver implements WebChatDriver {
 		const session = await showSession(this.exec, this.launcher, sessionId, signal);
 		const pageId = tabIdFromSession(session);
 		if (pageId === undefined) throw new Error(`Browser session ${sessionId} owns no page.`);
-		const url = await tabUrl(this.exec, this.launcher, pageId, signal);
-		return { sessionId, pageId, name: typeof session.name === "string" ? session.name : "", url: url ?? "" };
+		const url = await waitForTabUrl(this.exec, this.launcher, pageId, signal);
+		return { sessionId, pageId, name: typeof session.name === "string" ? session.name : "", url };
 	}
 
 	async upload(session: DriverSession, files: readonly string[], signal?: AbortSignal): Promise<void> {

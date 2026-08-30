@@ -179,7 +179,7 @@ export default function gptControl(pi: ExtensionAPI): void {
 			try {
 				const request = startRequest({ ...params, transport: params.transport ?? "browser" }, "image");
 				const result = await service.start(request);
-				if (result.run.status !== "completed") return textResult(runText(result.run), { conversationId: result.conversation.id, runId: result.run.id, status: result.run.status }, true);
+				if (result.run.status !== "completed") return textResult(runText(result.run), { conversationId: result.conversation.id, runId: result.run.id, status: result.run.status }, result.run.status === "failed");
 				return await imageResult(exec, service, result.run, params.output_dir, params.allow_external_output);
 			} catch (error) {
 				return describeError(error);

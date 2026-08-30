@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Queued image submissions no longer use the error channel, and response timeouts now enter `needs_user` instead of `failed`.
+- Chrome Bridge waits for a newly navigated tab to expose its URL before validating the ChatGPT origin, avoiding transient empty-URL failures.
+
 ## [0.3.0] - 2026-08-21
 
 ### Added
