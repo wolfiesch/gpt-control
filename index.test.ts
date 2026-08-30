@@ -73,6 +73,17 @@ describe("extension surface", () => {
 		expect(tools.get("gpt_run_cancel")?.approval).toBe("write");
 		expect(tools.get("gpt_conversation_close")?.approval).toBe("write");
 	});
+
+	test("includes diagnostic details in readable tool text", async () => {
+		const tools = new Map<string, ToolDefinition>();
+		const fake = browserExec();
+		const pi: ExtensionAPI = { exec: fake.exec, registerTool: (definition) => tools.set(definition.name, definition) };
+		gptControl(pi);
+		const result = await tools.get("gpt_diagnose")!.execute("diagnose", {});
+		const text = String(result.content[0]?.text);
+		expect(text).toContain('"preferred": "browser"');
+		expect(text).toContain('"focusSafety":');
+	});
 });
 
 describe("conversation and run semantics", () => {

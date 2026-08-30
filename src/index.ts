@@ -197,7 +197,7 @@ export default function gptControl(pi: ExtensionAPI): void {
 		execute: async () => {
 			try {
 				const details = await service.diagnose();
-				return textResult("GPT-Control transport diagnosis.", details);
+				return textResult(`GPT-Control transport diagnosis.\n\n${JSON.stringify(details, null, 2)}`, details);
 			} catch (error) {
 				return describeError(error);
 			}
