@@ -7,6 +7,7 @@ import { resolveExec, resolveType, applyLabel } from "./host";
 import { GptControlService, type StartRequest } from "./service";
 import { resolveCapabilities } from "./capability";
 import type { RunRecord } from "./domain";
+import type { DriverSession, WebChatDriver } from "./browser-driver";
 import type { Exec, ExtensionAPI, ToolResult, TypeBuilder } from "./types";
 
 export const GENERATED_ROOT = resolve(homedir(), ".gpt-control", "generated");
@@ -149,7 +150,7 @@ export default function gptControl(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "gpt_conversation_close",
 		label: "GPT Conversation Close",
-		description: "Close a GPT-Control conversation locally. For Chrome Bridge this closes only the wrapper-owned tabs; it does not delete provider-side history or uploaded files.",
+		description: "Close a GPT-Control conversation locally. Closes only the browser driver's wrapper-owned tabs; it does not delete provider-side history or uploaded files.",
 		loadMode: "discoverable",
 		approval: "write",
 		parameters: Type.Object({ conversation_id: Type.String() }),
@@ -166,7 +167,7 @@ export default function gptControl(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "gpt_image",
 		label: "GPT Image",
-		description: "Generate or iterate on an image through an explicitly selected Chrome Bridge conversation, with each iteration receiving a new run_id.",
+		description: "Generate or iterate on an image through the configured browser driver, with each iteration receiving a new run_id. Saves full-resolution images to output_dir.",
 		loadMode: "discoverable",
 		approval: "write",
 		parameters: Type.Object({
@@ -235,29 +236,43 @@ async function imageResult(exec: Exec, service: GptControlService, run: RunRecor
 	await mkdir(outputDir, { recursive: true });
 	const content: Array<Record<string, unknown>> = [];
 	const paths: string[] = [];
+	// Resolved once, only when a page-bound image or the screenshot fallback needs the owned browser page.
+	let browser: { driver: WebChatDriver; session: DriverSession } | null | undefined;
+	const ownedBrowser = async () => {
+		if (browser !== undefined) return browser;
+		browser = null;
+		const conversation = await service.store.getConversation(run.conversationId);
+		const driver = (await resolveCapabilities(exec)).browser?.driver;
+		if (conversation.provider !== "browser" || !driver || conversation.browserDriverId !== driver.id || !conversation.browserSessionId) return browser;
+		const session = await driver.show(conversation.browserSessionId);
+		const owned = session.name.startsWith("gpt-control:")
+			&& session.pageId === conversation.browserPageId
+			&& new URL(session.url).origin === CHATGPT_ORIGIN;
+		if (owned) browser = { driver, session };
+		return browser;
+	};
 	for (const url of (run.artifactUrls ?? []).slice(0, 4)) {
 		const suffix = createHash("sha256").update(url).digest("hex").slice(0, 12);
 		const path = resolve(outputDir, `${run.id}-${suffix}.png`);
-		const saved = await fetchArtifact(url, path);
-		if (!saved.path) continue;
-		paths.push(saved.path);
-		content.push({ type: "image", data: (await readFile(saved.path)).toString("base64"), mimeType: "image/png" });
+		let saved: string | undefined;
+		if (url.startsWith("blob:")) {
+			const owner = await ownedBrowser();
+			saved = owner?.driver.saveImage ? await owner.driver.saveImage(owner.session, url, path).catch(() => undefined) : undefined;
+		} else {
+			saved = (await fetchArtifact(url, path)).path;
+		}
+		if (!saved) continue;
+		paths.push(saved);
+		content.push({ type: "image", data: (await readFile(saved)).toString("base64"), mimeType: "image/png" });
 	}
 	if (paths.length === 0) {
-		const conversation = await service.store.getConversation(run.conversationId);
-		const capabilities = await resolveCapabilities(exec);
-		if (conversation.provider === "browser" && capabilities.browser && conversation.browserDriverId === capabilities.browser.driver.id && conversation.browserSessionId) {
-			const session = await capabilities.browser.driver.show(conversation.browserSessionId);
-			const owned = session.name.startsWith("gpt-control:")
-				&& session.pageId === conversation.browserPageId
-				&& new URL(session.url).origin === CHATGPT_ORIGIN;
-			if (owned) {
-				const path = resolve(outputDir, `${run.id}.screenshot.png`);
-				const screenshot = await capabilities.browser.driver.screenshot(session, path);
-				if (screenshot) {
-					paths.push(screenshot);
-					content.push({ type: "image", data: (await readFile(screenshot)).toString("base64"), mimeType: "image/png" });
-				}
+		const owner = await ownedBrowser();
+		if (owner) {
+			const path = resolve(outputDir, `${run.id}.screenshot.png`);
+			const screenshot = await owner.driver.screenshot(owner.session, path);
+			if (screenshot) {
+				paths.push(screenshot);
+				content.push({ type: "image", data: (await readFile(screenshot)).toString("base64"), mimeType: "image/png" });
 			}
 		}
 	}

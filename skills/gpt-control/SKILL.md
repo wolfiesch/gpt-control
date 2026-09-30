@@ -11,7 +11,7 @@ tool always talks to the ChatGPT website.
 
 ## Choose a transport
 
-- `browser`: default. Uses `GPT_CONTROL_BROWSER_DRIVER` when configured, otherwise an autodetected adapter such as Chrome Bridge.
+- `browser`: default. Uses `GPT_CONTROL_BROWSER_DRIVER` when configured, otherwise the AgentTab driver (`agenttab-gpt-control-driver` on `PATH`), then Chrome Bridge.
 - `oracle_browser`: explicit legacy fallback. It can take focus and requires `allow_focus_steal=true`.
 - `oracle_api`: explicit paid legacy fallback.
 
@@ -32,7 +32,7 @@ Tools:
 - `gpt_run`: read one exact run.
 - `gpt_run_cancel`: cancel an active in-process run.
 - `gpt_conversation_close`: local cleanup. Provider-side data remains.
-- `gpt_image`: Chrome Bridge image iteration.
+- `gpt_image`: image generation and iteration through the browser driver; full-resolution files land in `output_dir`.
 - `gpt_diagnose`: transport state without starting work.
 
 ## Attachment boundary
