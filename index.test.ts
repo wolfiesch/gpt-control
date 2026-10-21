@@ -23,6 +23,8 @@ beforeEach(() => {
 	resetCapabilityCache();
 	process.env.GPT_CONTROL_BRIDGE = "bridge";
 	process.env.GPT_CONTROL_POLL_MS = "1";
+	process.env.PATH = "";
+	delete process.env.GPT_CONTROL_BROWSER_DRIVER;
 	delete process.env.OPENAI_API_KEY;
 });
 afterEach(() => {
@@ -35,7 +37,7 @@ function ok(result: unknown): ExecResult {
 	return { stdout: JSON.stringify({ success: true, result }), stderr: "", code: 0, killed: false };
 }
 
-function browserExec(options: { foreign?: boolean; noAssistantTurn?: boolean; unresolvedUrlReads?: number } = {}) {
+function browserExec(options: { foreign?: boolean; noAssistantTurn?: boolean; unresolvedUrlReads?: number; assistantBody?: () => string } = {}) {
 	let unresolvedUrlReads = options.unresolvedUrlReads ?? 0;
 	let submitted = 0;
 	const prompts: string[] = [];
@@ -61,7 +63,7 @@ function browserExec(options: { foreign?: boolean; noAssistantTurn?: boolean; un
 		}
 		if (args[0] === "click" || args[0] === "uploadFile") return ok({ success: true });
 		if (args[0] === "getHTML") {
-			const turns = options.noAssistantTurn ? "" : Array.from({ length: submitted }, (_, index) => `<div data-message-author-role="assistant"><p>answer ${index + 1}</p></div>`).join("");
+			const turns = options.noAssistantTurn ? "" : Array.from({ length: submitted }, (_, index) => `<div data-message-author-role="assistant"><p>${options.assistantBody?.() ?? `answer ${index + 1}`}</p></div>`).join("");
 			writeFileSync(args[2], turns);
 			return ok({ success: true });
 		}
@@ -140,6 +142,19 @@ describe("conversation and run semantics", () => {
 		const result = await service.start({ kind: "image", prompt: "draw", transport: "browser", workspaceRoot: scratch(), timeoutMs: 10 });
 		expect(result.run.status).toBe("needs_user");
 		expect(result.run.error).toContain("No new assistant turn");
+	});
+
+	test.each(["blank", "changing"] as const)("keeps a %s assistant turn out of completed results", async (body) => {
+		let chunk = 0;
+		const fake = browserExec({ assistantBody: () => body === "blank" ? "" : `partial ${++chunk}` });
+		const service = new GptControlService(fake.exec, new RunStore(scratch()));
+		const result = await service.start({ kind: "image", prompt: "draw", transport: "browser", workspaceRoot: scratch(), timeoutMs: 100 });
+		const persisted = await service.getRun(result.run.id);
+		expect(result.run.status).toBe("needs_user");
+		expect(persisted.status).toBe("needs_user");
+		expect(persisted.resultText).toBeUndefined();
+		expect(persisted.artifactUrls).toBeUndefined();
+		expect(persisted.receipt.resultSha256).toBeUndefined();
 	});
 
 	test("persists a structured report, manifest, and receipt for the exact run", async () => {
