@@ -255,7 +255,10 @@ async function imageResult(exec: Exec, service: GptControlService, run: RunRecor
 		const suffix = createHash("sha256").update(url).digest("hex").slice(0, 12);
 		const path = resolve(outputDir, `${run.id}-${suffix}.png`);
 		let saved: string | undefined;
-		if (url.startsWith("blob:")) {
+		const parsedUrl = URL.canParse(url) ? new URL(url) : undefined;
+		const pageBound = url.startsWith("blob:") || (parsedUrl?.origin === CHATGPT_ORIGIN
+			&& parsedUrl.pathname === "/backend-api/estuary/content");
+		if (pageBound) {
 			const owner = await ownedBrowser();
 			saved = owner?.driver.saveImage ? await owner.driver.saveImage(owner.session, url, path).catch(() => undefined) : undefined;
 		} else {

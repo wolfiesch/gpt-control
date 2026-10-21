@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Recover authenticated ChatGPT generated-image URLs through the owned browser driver instead of an unauthenticated HTTP fetch.
 - Queued image submissions no longer use the error channel, and response timeouts now enter `needs_user` instead of `failed`.
 - Blank or still-changing browser replies remain `needs_user` without a completed result or image recovery attempt.
 - Chrome Bridge waits for a newly navigated tab to expose its URL before validating the ChatGPT origin, avoiding transient empty-URL failures.
