@@ -17,6 +17,7 @@ any CLI harness
 GPT-Control core
       │ WebChatDriver
       ├── configured external command
+      ├── AgentTab adapter (autodetected)
       ├── Chrome Bridge adapter
       └── future Playwright, CDP, or harness adapters
       │
@@ -28,7 +29,7 @@ This provides high included web usage without per-call API billing. ChatGPT stil
 
 ## Browser drivers
 
-Set `GPT_CONTROL_BROWSER_DRIVER` to any executable implementing the versioned JSON-stdin/stdout protocol. If no command is configured, GPT-Control autodetects Chrome Bridge as one optional adapter.
+Set `GPT_CONTROL_BROWSER_DRIVER` to any executable implementing the versioned JSON-stdin/stdout protocol. If no command is configured, GPT-Control autodetects `agenttab-gpt-control-driver` on `PATH`, then Chrome Bridge.
 
 Each invocation receives one JSON line on stdin:
 
@@ -71,6 +72,14 @@ Required actions:
 | `set_state` | empty success |
 | `close` | empty success |
 | `screenshot` | saved path or empty result |
+
+Optional action:
+
+| Action | Params | Result |
+| --- | --- | --- |
+| `save_image` | `{ session, url, outputPath }` | saved path |
+
+`snapshot` may return image URLs that only the page can resolve, such as ChatGPT's `blob:` URLs. GPT-Control asks the driver to save those through `save_image`; if the driver lacks it or fails, the image tool falls back to `screenshot`.
 
 Prompts and file paths travel through stdin, never process arguments. Driver responses are capped and runtime-validated.
 
@@ -189,7 +198,7 @@ Configure any protocol-compatible executable:
 export GPT_CONTROL_BROWSER_DRIVER="/path/to/my-chatgpt-driver"
 ```
 
-Chrome Bridge is an optional autodetected adapter:
+AgentTab ships a driver; put its built `driver.mjs` on `PATH` as `agenttab-gpt-control-driver`. Chrome Bridge remains an optional autodetected adapter:
 
 ```sh
 git clone https://github.com/wolfiesch/chrome-bridge.git

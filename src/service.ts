@@ -22,6 +22,13 @@ import type { Exec } from "./types";
 const activeRuns = new Map<string, AbortController>();
 const TERMINAL = new Set(["completed", "failed", "cancelled", "needs_user"]);
 
+class NeedsUserError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "NeedsUserError";
+	}
+}
+
 interface ProviderTurnResult {
 	provider: Provider;
 	text: string;
@@ -96,7 +103,7 @@ export class GptControlService {
 
 	async waitForRun(runId: string, timeoutMs = 10 * 60_000): Promise<RunRecord> {
 		const deadline = Date.now() + timeoutMs;
-		for (;;) {
+		for (; ;) {
 			const run = await this.store.getRun(runId);
 			if (TERMINAL.has(run.status) || Date.now() >= deadline) return run;
 			await new Promise((done) => setTimeout(done, 200));
@@ -223,7 +230,7 @@ export class GptControlService {
 		} catch (error) {
 			resetCapabilityCache();
 			return this.store.updateRun(run.id, {
-				status: signal.aborted ? "cancelled" : "failed",
+				status: signal.aborted ? "cancelled" : error instanceof NeedsUserError ? "needs_user" : "failed",
 				error: error instanceof Error ? error.message : String(error),
 				completedAt: nowIso(),
 			});
@@ -256,11 +263,13 @@ export class GptControlService {
 		await driver.upload(session, run.attachmentManifest.files.map((file) => file.path), signal);
 		await driver.submit(session, prompt, signal);
 		const next = await waitForNewDriverSnapshot(driver, session, { baselineCount: baseline.count, timeoutMs, signal });
-		if (!next.snapshot) {
+		if (!next.snapshot || !next.settled) {
 			await driver.setState(session.sessionId, "needs_user", signal).catch(() => undefined);
-			throw new Error("No new assistant turn appeared before the timeout. Inspect the run later; the previous answer was not returned.");
+			throw new NeedsUserError(next.snapshot
+				? "The new assistant turn did not settle. Inspect the browser conversation before retrying; no partial answer was returned."
+				: "No new assistant turn appeared before the timeout. Inspect the run later; the previous answer was not returned.");
 		}
-		await driver.setState(session.sessionId, next.settled ? "completed" : "needs_user", signal).catch(() => undefined);
+		await driver.setState(session.sessionId, "completed", signal).catch(() => undefined);
 		return {
 			provider: "browser",
 			text: next.snapshot.text,

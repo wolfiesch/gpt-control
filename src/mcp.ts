@@ -63,7 +63,10 @@ export function createMcpServer(service = new GptControlService(fallbackExec)): 
 		description: "Report transport readiness and focus-safety behavior.",
 		inputSchema: {},
 		annotations: { readOnlyHint: true },
-	}, async () => toolPayload("GPT-Control transport diagnosis.", await service.diagnose()));
+	}, async () => {
+		const details = await service.diagnose();
+		return toolPayload(`GPT-Control transport diagnosis.\n\n${JSON.stringify(details, null, 2)}`, details);
+	});
 
 	return server;
 }

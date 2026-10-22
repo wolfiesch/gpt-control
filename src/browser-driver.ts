@@ -14,8 +14,32 @@ import {
 	tabUrl,
 	type AssistantSnapshot,
 } from "./chatgpt";
-import { probeBridge, resolveBridgeLauncher, splitCommandLine, type Launcher } from "./transport";
+import { findOnPath, probeBridge, resolveBridgeLauncher, splitCommandLine, type Launcher } from "./transport";
 import type { Exec } from "./types";
+
+const TAB_URL_TIMEOUT_MS = 10_000;
+
+async function waitForTabUrl(
+	exec: Exec,
+	launcher: Launcher,
+	pageId: number,
+	signal?: AbortSignal,
+): Promise<string> {
+	const deadline = Date.now() + TAB_URL_TIMEOUT_MS;
+	let delayMs = 100;
+	while (true) {
+		signal?.throwIfAborted();
+		const url = await tabUrl(exec, launcher, pageId, signal);
+		if (url) return url;
+		if (Date.now() >= deadline) {
+			throw new Error(`Browser page ${String(pageId)} URL remained unresolved after navigation.`);
+		}
+		const { promise, resolve } = Promise.withResolvers<void>();
+		setTimeout(resolve, Math.min(delayMs, deadline - Date.now()));
+		await promise;
+		delayMs = Math.min(delayMs * 2, 1_000);
+	}
+}
 
 export const BROWSER_DRIVER_PROTOCOL_VERSION = 1;
 export type DriverPageId = string | number;
@@ -45,6 +69,8 @@ export interface WebChatDriver {
 	setState(sessionId: string, state: DriverSessionState, signal?: AbortSignal): Promise<void>;
 	close(sessionId: string, signal?: AbortSignal): Promise<void>;
 	screenshot(session: DriverSession, outputPath: string, signal?: AbortSignal): Promise<string | undefined>;
+	/** Saves a generated image whose URL only the page can resolve (for example a `blob:` URL). Optional. */
+	saveImage?(session: DriverSession, url: string, outputPath: string, signal?: AbortSignal): Promise<string | undefined>;
 }
 
 export async function waitForNewDriverSnapshot(
@@ -100,18 +126,23 @@ export interface ResolvedBrowserDriver {
 	source: string;
 }
 
+/** The AgentTab-provided driver, preferred over the retired Chrome Bridge when no command is configured. */
+const AGENTTAB_DRIVER_COMMAND = "agenttab-gpt-control-driver";
+
 export async function resolveBrowserDriver(
 	exec: Exec,
 	env: NodeJS.ProcessEnv = process.env,
 	signal?: AbortSignal,
 ): Promise<ResolvedBrowserDriver> {
 	const external = env.GPT_CONTROL_BROWSER_DRIVER?.trim();
-	if (external) {
-		const parts = splitCommandLine(external);
-		if (parts.length === 0) return { probe: { ready: false, driver: "external", reason: "GPT_CONTROL_BROWSER_DRIVER is empty" }, source: "GPT_CONTROL_BROWSER_DRIVER" };
+	const agentTab = external ? undefined : findOnPath(AGENTTAB_DRIVER_COMMAND, env);
+	if (external || agentTab) {
+		const parts = external ? splitCommandLine(external) : [agentTab!];
+		const source = external ? "GPT_CONTROL_BROWSER_DRIVER" : `${AGENTTAB_DRIVER_COMMAND} on PATH`;
+		if (parts.length === 0) return { probe: { ready: false, driver: "external", reason: "GPT_CONTROL_BROWSER_DRIVER is empty" }, source };
 		const driver = new ExternalCommandBrowserDriver(parts[0], parts.slice(1));
 		const probe = await driver.probe(signal).catch((error): DriverProbe => ({ ready: false, driver: driver.id, reason: message(error) }));
-		return { driver: probe.ready ? driver : undefined, probe, source: "GPT_CONTROL_BROWSER_DRIVER" };
+		return { driver: probe.ready ? driver : undefined, probe, source };
 	}
 	const launcher = resolveBridgeLauncher(env);
 	if (launcher) {
@@ -154,8 +185,8 @@ export class ChromeBridgeBrowserDriver implements WebChatDriver {
 		const session = await showSession(this.exec, this.launcher, sessionId, signal);
 		const pageId = tabIdFromSession(session);
 		if (pageId === undefined) throw new Error(`Browser session ${sessionId} owns no page.`);
-		const url = await tabUrl(this.exec, this.launcher, pageId, signal);
-		return { sessionId, pageId, name: typeof session.name === "string" ? session.name : "", url: url ?? "" };
+		const url = await waitForTabUrl(this.exec, this.launcher, pageId, signal);
+		return { sessionId, pageId, name: typeof session.name === "string" ? session.name : "", url };
 	}
 
 	async upload(session: DriverSession, files: readonly string[], signal?: AbortSignal): Promise<void> {
@@ -237,6 +268,11 @@ export class ExternalCommandBrowserDriver implements WebChatDriver {
 
 	async screenshot(session: DriverSession, outputPath: string, signal?: AbortSignal): Promise<string | undefined> {
 		const result = await this.call("screenshot", { session, outputPath }, signal);
+		return typeof result === "string" ? result : undefined;
+	}
+
+	async saveImage(session: DriverSession, url: string, outputPath: string, signal?: AbortSignal): Promise<string | undefined> {
+		const result = await this.call("save_image", { session, url, outputPath }, signal);
 		return typeof result === "string" ? result : undefined;
 	}
 
